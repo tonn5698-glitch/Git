@@ -1,0 +1,82 @@
+name: Download Paper and Commit
+
+on:
+  workflow_dispatch:
+  # Only run manually; committing paper.jar will not start another download run.
+
+permissions:
+  contents: write
+
+concurrency:
+  group: paper-download
+  cancel-in-progress: false
+
+jobs:
+  download-paper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_TOKEN || github.token }}
+          fetch-depth: 0
+
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y jq curl
+
+      - name: Download latest stable Paper
+        shell: bash
+        run: |
+          set -euo pipefail
+          USER_AGENT="Ton-Minecraft-Paper-Downloader/1.0 (https://github.com/tonn5698-glitch/Git)"
+          PROJECTS_URL="https://fill.papermc.io/v3/projects/paper"
+
+          VERSIONS="$(curl -fsSL -H "User-Agent: $USER_AGENT" "$PROJECTS_URL" | jq -r '.versions | to_entries[] | .value[]' | sort -V -r)"
+
+          PAPER_URL=""
+          PAPER_VERSION=""
+          PAPER_BUILD=""
+
+          while IFS= read -r VERSION; do
+            [ -n "$VERSION" ] || continue
+            BUILDS="$(curl -fsSL -H "User-Agent: $USER_AGENT" "https://fill.papermc.io/v3/projects/paper/versions/$VERSION/builds")"
+            BUILD="$(printf '%s' "$BUILDS" | jq -r 'first(.[] | select(.channel == "STABLE")) // empty')"
+            if [ -n "$BUILD" ]; then
+              PAPER_URL="$(printf '%s' "$BUILD" | jq -r '.downloads."server:default".url // empty')"
+              PAPER_BUILD="$(printf '%s' "$BUILD" | jq -r '.id // empty')"
+              if [ -n "$PAPER_URL" ]; then
+                PAPER_VERSION="$VERSION"
+                break
+              fi
+            fi
+          done <<< "$VERSIONS"
+
+          if [ -z "$PAPER_URL" ]; then
+            echo "Could not find a stable Paper build."
+            exit 1
+          fi
+
+          mkdir -p server
+          curl -fL --retry 3 --retry-delay 2 -H "User-Agent: $USER_AGENT" "$PAPER_URL" -o server/paper.jar
+          test -s server/paper.jar
+          echo "Downloaded Paper version $PAPER_VERSION build $PAPER_BUILD"
+          echo "Paper version: $PAPER_VERSION" > server/paper-version.txt
+          echo "Paper build: $PAPER_BUILD" >> server/paper-version.txt
+          sha256sum server/paper.jar
+
+      - name: Commit and push Paper
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server/paper.jar server/paper-version.txt
+          if git diff --cached --quiet; then
+            echo "Paper files are unchanged; nothing to commit."
+            exit 0
+          fi
+          git commit -m "Update Paper server jar"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
