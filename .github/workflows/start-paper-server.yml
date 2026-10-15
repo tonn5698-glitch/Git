@@ -1,0 +1,154 @@
+name: Start Paper Server
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: paper-server-live
+  cancel-in-progress: false
+
+jobs:
+  run-server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_TOKEN || github.token }}
+          fetch-depth: 0
+
+      - name: Validate required secrets and world
+        shell: bash
+        env:
+          PLAYIT_SECRET: ${{ secrets.PLAYIT_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PLAYIT_SECRET" ]; then
+            echo "::error::Missing repository secret PLAYIT_SECRET. Add your Playit agent secret in Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          test -s server/paper.jar
+          test -s server/world/level.dat
+          grep -q '^eula=true$' server/eula.txt
+          grep -q '^level-name=world$' server/server.properties
+
+      - name: Install JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Start Playit tunnel
+        shell: bash
+        env:
+          PLAYIT_SECRET: ${{ secrets.PLAYIT_SECRET }}
+        run: |
+          set -euo pipefail
+          docker pull ghcr.io/playit-cloud/playit-agent:latest
+          docker run -d --name playit-agent --network host \
+            -e SECRET_KEY="$PLAYIT_SECRET" \
+            ghcr.io/playit-cloud/playit-agent:latest
+          docker logs --follow playit-agent &
+          echo $! > "$RUNNER_TEMP/playit-log-pid"
+          echo "Playit agent started. Public address may also be viewed at https://playit.gg/account/tunnels"
+          sleep 10
+          docker ps --filter name=playit-agent --format 'Playit container status: {{.Status}}'
+          docker logs --tail 30 playit-agent
+
+      - name: Start Paper and keep it online for 5h45m
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd server
+          CONSOLE_PIPE="$RUNNER_TEMP/paper-console"
+          STARTUP_LOG="$RUNNER_TEMP/paper-server.log"
+          mkfifo "$CONSOLE_PIPE"
+          exec 3<>"$CONSOLE_PIPE"
+          java -Xms1G -Xmx4G -jar paper.jar --nogui < "$CONSOLE_PIPE" > "$STARTUP_LOG" 2>&1 &
+          SERVER_PID=$!
+          cleanup() {
+            if kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "Sending graceful stop to Paper..."
+              printf 'save-all\n' >&3 || true
+              sleep 2
+              printf 'stop\n' >&3 || true
+              for _ in $(seq 1 60); do
+                kill -0 "$SERVER_PID" 2>/dev/null || break
+                sleep 1
+              done
+              kill -0 "$SERVER_PID" 2>/dev/null && kill "$SERVER_PID" || true
+              wait "$SERVER_PID" || true
+            fi
+            docker logs --tail 80 playit-agent 2>/dev/null || true
+            docker stop playit-agent >/dev/null 2>&1 || true
+            docker rm playit-agent >/dev/null 2>&1 || true
+            exec 3>&- || true
+            rm -f "$CONSOLE_PIPE"
+          }
+          trap cleanup EXIT INT TERM
+
+          READY=0
+          for _ in $(seq 1 300); do
+            if grep -q 'Done (' "$STARTUP_LOG"; then
+              READY=1
+              break
+            fi
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              cat "$STARTUP_LOG"
+              exit 1
+            fi
+            sleep 1
+          done
+          cat "$STARTUP_LOG"
+          if [ "$READY" -ne 1 ]; then
+            echo "::error::Paper did not finish startup within 5 minutes."
+            exit 1
+          fi
+
+          echo "Paper is online. Keep this Actions run open; the world will be committed after a clean shutdown."
+          echo "Server will stop automatically after 5 hours 45 minutes."
+          for _ in $(seq 1 12); do
+            MATCH="$(docker logs playit-agent 2>&1 | grep -Eo '[A-Za-z0-9.-]+\.playit\.gg(:[0-9]+)?' | tail -1 || true)"
+            if [ -n "$MATCH" ]; then
+              echo "Possible Playit address: $MATCH"
+              break
+            fi
+            sleep 5
+          done
+
+          sleep 345m
+          echo "Runtime reached 5h45m; saving and stopping Paper."
+          printf 'save-all\n' >&3
+          sleep 3
+          printf 'stop\n' >&3
+          wait "$SERVER_PID"
+          exec 3>&-
+          rm -f "$CONSOLE_PIPE"
+          trap - EXIT INT TERM
+          docker logs --tail 80 playit-agent || true
+          docker stop playit-agent >/dev/null
+          docker rm playit-agent >/dev/null
+
+      - name: Commit world after Paper has stopped
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if pgrep -af '[p]aper.jar' >/dev/null; then
+            echo "::error::Paper process still appears to be running; refusing to commit world files."
+            exit 1
+          fi
+          rm -f server/world/session.lock
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A server/world server/server.properties server/eula.txt server/config server/plugins
+          if git diff --cached --quiet; then
+            echo "No world or server data changes to commit."
+            exit 0
+          fi
+          git commit -m "Save Paper server world after shutdown"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
