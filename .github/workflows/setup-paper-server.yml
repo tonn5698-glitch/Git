@@ -1,0 +1,85 @@
+name: Setup Paper Server
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: paper-server-setup
+  cancel-in-progress: false
+
+jobs:
+  setup-server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_TOKEN || github.token }}
+          fetch-depth: 0
+
+      - name: Install JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Verify Java and Paper jar
+        run: |
+          java -version
+          test -s server/paper.jar
+
+      - name: Accept EULA and start server for initial setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd server
+          printf 'eula=true\n' > eula.txt
+          mkdir -p logs
+          CONSOLE_PIPE="$RUNNER_TEMP/paper-console"
+          mkfifo "$CONSOLE_PIPE"
+          exec 3<>"$CONSOLE_PIPE"
+          java -Xms1G -Xmx4G -jar paper.jar --nogui < "$CONSOLE_PIPE" > "$RUNNER_TEMP/paper-startup.log" 2>&1 &
+          SERVER_PID=$!
+          READY=0
+          for i in $(seq 1 240); do
+            if grep -q 'Done (' "$RUNNER_TEMP/paper-startup.log"; then
+              READY=1
+              break
+            fi
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              cat "$RUNNER_TEMP/paper-startup.log"
+              exit 1
+            fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/paper-startup.log"
+          if [ "$READY" -ne 1 ]; then
+            echo 'Server did not finish startup within 4 minutes.'
+            printf 'stop\n' >&3 || true
+            wait "$SERVER_PID" || true
+            exit 1
+          fi
+          sleep 10
+          printf 'stop\n' >&3
+          wait "$SERVER_PID"
+          exec 3>&-
+          rm -f "$CONSOLE_PIPE"
+          echo 'Paper startup completed and server stopped cleanly.'
+
+      - name: Commit generated server setup and world
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A server -- ':!server/paper.jar' ':!server/logs' ':!server/cache' ':!server/crash-reports' ':!server/*.log'
+          if git diff --cached --quiet; then
+            echo 'No generated server files to commit.'
+            exit 0
+          fi
+          git commit -m 'Initialize Paper 26.1.2 server'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
