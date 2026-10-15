@@ -138,7 +138,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if pgrep -af '[p]aper.jar' >/dev/null; then
+          if pgrep -af '[j]ava .* -jar paper\.jar' >/dev/null; then
             echo "::error::Paper process still appears to be running; refusing to commit world files."
             exit 1
           fi
