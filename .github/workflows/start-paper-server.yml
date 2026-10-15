@@ -67,8 +67,17 @@ jobs:
           done
           test -n "$URL"
           echo "Dashboard: $URL"
+          printf "%s\n" "$URL" > "$RUNNER_TEMP/blocklab-tunnel-url.txt"
           echo "## BlockLab dashboard" >> "$GITHUB_STEP_SUMMARY"
           echo "[$URL]($URL)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish tunnel URL
+        uses: actions/upload-artifact@v4
+        with:
+          name: blocklab-tunnel-url
+          path: ${{ runner.temp }}/blocklab-tunnel-url.txt
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Keep server online
         run: |
