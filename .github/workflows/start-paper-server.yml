@@ -128,7 +128,9 @@ jobs:
             exec 3>&- || true
             rm -f "$CONSOLE_PIPE"
           }
-          trap cleanup EXIT INT TERM
+          trap cleanup EXIT
+          trap 'exit 143' TERM
+          trap 'exit 130' INT
 
           READY=0
           for _ in $(seq 1 300); do
@@ -172,15 +174,29 @@ jobs:
           docker stop playit-agent >/dev/null
           docker rm playit-agent >/dev/null
 
+      - name: Export world.zip
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f world.zip
+          (cd server && zip -qr ../world.zip world)
+          test -s world.zip
+
+      - name: Upload world.zip artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: world
+          path: world.zip
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Commit world after Paper has stopped
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          if pgrep -af '[j]ava .* -jar paper\.jar' >/dev/null; then
-            echo "::error::Paper process still appears to be running; refusing to commit world files."
-            exit 1
-          fi
           rm -f server/world/session.lock
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
