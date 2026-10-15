@@ -1,0 +1,5 @@
+.blocklab-admin-token
+web-url.txt
+minecraft-address.txt
+web/__pycache__/
+artifacts/*.zip.tmp

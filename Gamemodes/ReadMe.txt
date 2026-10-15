@@ -1,0 +1,1 @@
+There's datapack gamemodes. Put it in world/datapack/ to use
