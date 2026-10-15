@@ -48,10 +48,10 @@ jobs:
           PLAYIT_SECRET: ${{ secrets.PLAYIT_SECRET }}
         run: |
           set -euo pipefail
-          docker pull ghcr.io/playit-cloud/playit-agent:latest
+          docker pull ghcr.io/playit-cloud/playit-agent:1.0
           docker run -d --name playit-agent --network host \
             -e SECRET_KEY="$PLAYIT_SECRET" \
-            ghcr.io/playit-cloud/playit-agent:latest
+            ghcr.io/playit-cloud/playit-agent:1.0
           docker logs --follow playit-agent &
           echo $! > "$RUNNER_TEMP/playit-log-pid"
           echo "Playit agent started. Public address may also be viewed at https://playit.gg/account/tunnels"
