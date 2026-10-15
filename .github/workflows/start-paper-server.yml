@@ -42,44 +42,19 @@ jobs:
           distribution: temurin
           java-version: '25'
 
-      - name: Install Geyser, Floodgate, and ViaVersion
+      - name: Verify bundled plugins and Geyser config
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p server/plugins
-          curl --fail --location --retry 3 \
-            https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/spigot \
-            -o server/plugins/Geyser-Spigot.jar
-          curl --fail --location --retry 3 \
-            https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot \
-            -o server/plugins/floodgate-spigot.jar
-          VIA_URL="$(curl --fail --location --retry 3 \
-            'https://api.modrinth.com/v2/project/viaversion/version?loaders=%5B%22paper%22%5D&game_versions=%5B%2226.1.2%22%5D&version_type=release' \
-            | python3 -c 'import json,sys; versions=json.load(sys.stdin); match=next((v for v in versions if v.get("version_type")=="release" and "26.1.2" in v.get("game_versions",[])), None); assert match, "No ViaVersion release found for Minecraft 26.1.2"; print(next(f["url"] for f in match["files"] if f.get("primary")))')"
-          curl --fail --location --retry 3 "$VIA_URL" -o server/plugins/ViaVersion.jar
+          test -s server/plugins/Geyser-Spigot.jar
+          test -s server/plugins/floodgate-spigot.jar
+          test -s server/plugins/ViaVersion.jar
 
-          # Seed Geyser's config before its first startup so Bedrock uses Floodgate authentication.
           GEYSER_CONFIG="server/plugins/Geyser-Spigot/config.yml"
-          if [ ! -s "$GEYSER_CONFIG" ]; then
-            mkdir -p "$(dirname "$GEYSER_CONFIG")"
-            cat > "$GEYSER_CONFIG" <<'YAML'
-          bedrock:
-            address: 0.0.0.0
-            port: 19132
-            clone-remote-port: false
-          remote:
-            address: auto
-            port: 25565
-            auth-type: floodgate
-          floodgate-key-file: key.pem
-          YAML
-          else
-            # Keep custom settings but ensure Floodgate authentication is enabled.
-            sed -i -E 's/^([[:space:]]*auth-type:).*/\1 floodgate/' "$GEYSER_CONFIG"
-          fi
-          echo "Installed plugin files:"
+          test -s "$GEYSER_CONFIG"
+          grep -q 'auth-type: floodgate' "$GEYSER_CONFIG"
+          echo "Using plugin JARs already stored in the repository:"
           ls -lh server/plugins/Geyser-Spigot.jar server/plugins/floodgate-spigot.jar server/plugins/ViaVersion.jar
-          grep -n -A4 '^remote:' "$GEYSER_CONFIG"
 
       - name: Start Playit tunnel
         shell: bash
