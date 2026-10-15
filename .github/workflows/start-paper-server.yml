@@ -1,4 +1,4 @@
-name: Start Paper Server
+name: BlockLab Live World Server
 
 on:
   workflow_dispatch:
@@ -7,223 +7,98 @@ permissions:
   contents: write
 
 concurrency:
-  group: paper-server-live
+  group: blocklab-live
   cancel-in-progress: false
 
 jobs:
-  run-server:
+  server:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GH_TOKEN || github.token }}
-          fetch-depth: 0
+          fetch-depth: 1
 
-      - name: Validate required secrets and world
-        shell: bash
-        env:
-          PLAYIT_SECRET: ${{ secrets.PLAYIT_SECRET }}
-        run: |
-          set -euo pipefail
-          if [ -z "$PLAYIT_SECRET" ]; then
-            echo "::error::Missing repository secret PLAYIT_SECRET. Add your Playit agent secret in Settings > Secrets and variables > Actions."
-            exit 1
-          fi
-          test -s server/paper.jar
-          test -s server/world/level.dat
-          grep -q '^eula=true$' server/eula.txt
-          grep -q '^level-name=world$' server/server.properties
-
-      - name: Install JDK 25
+      - name: Java 25
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '25'
 
-      - name: Verify bundled plugins and Geyser config
-        shell: bash
+      - name: Validate BlockLab
         run: |
-          set -euo pipefail
-          test -s server/plugins/Geyser-Spigot.jar
-          test -s server/plugins/floodgate-spigot.jar
-          test -s server/plugins/ViaVersion.jar
+          set -e
+          test -s server/paper.jar
+          test -s Gamemodes/place_to_break.zip
+          python3 -m py_compile web/server.py
+          python3 -m unittest web/test_server.py
+          unzip -t Gamemodes/place_to_break.zip
+          grep -q '^eula=true$' server/eula.txt
 
-          GEYSER_CONFIG="server/plugins/Geyser-Spigot/config.yml"
-          test -s "$GEYSER_CONFIG"
-          grep -q 'auth-type: floodgate' "$GEYSER_CONFIG"
-          echo "Using plugin JARs already stored in the repository:"
-          ls -lh server/plugins/Geyser-Spigot.jar server/plugins/floodgate-spigot.jar server/plugins/ViaVersion.jar
-
-      - name: Start BlockLab web dashboard and Cloudflare tunnel
-        shell: bash
+      - name: Start BlockLab API
         run: |
-          set -euo pipefail
-          python3 -m http.server 8080 --bind 127.0.0.1 --directory web > "$RUNNER_TEMP/blocklab-web.log" 2>&1 &
-          echo $! > "$RUNNER_TEMP/blocklab-web.pid"
-          curl --retry 5 --retry-delay 2 --retry-connrefused -fsS http://127.0.0.1:8080/ -o /dev/null
+          set -e
+          mkdir -p artifacts
+          python3 -u web/server.py > "$RUNNER_TEMP/blocklab.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/blocklab.pid"
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8080/api/status >/dev/null && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8080/api/status >/dev/null
+          ADMIN_PASSWORD="$(grep '^Admin password: ' "$RUNNER_TEMP/blocklab.log" | sed 's/^Admin password: //' | head -1)"
+          echo "## BlockLab login" >> "$GITHUB_STEP_SUMMARY"
+          echo "Username: \`TonKun\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Admin code: \`$ADMIN_PASSWORD\`" >> "$GITHUB_STEP_SUMMARY"
 
-          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o "$RUNNER_TEMP/cloudflared"
+      - name: Start Cloudflare web tunnel
+        run: |
+          set -e
+          curl -fsSL --retry 3 https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o "$RUNNER_TEMP/cloudflared"
           chmod +x "$RUNNER_TEMP/cloudflared"
           "$RUNNER_TEMP/cloudflared" tunnel --url http://127.0.0.1:8080 --no-autoupdate > "$RUNNER_TEMP/cloudflared.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/cloudflared.pid"
-
-          for _ in $(seq 1 45); do
-            WEB_URL="$(grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$RUNNER_TEMP/cloudflared.log" | head -1 || true)"
-            if [ -n "$WEB_URL" ]; then
-              echo "::notice title=BlockLab web dashboard::$WEB_URL"
-              echo "BlockLab dashboard URL: $WEB_URL"
-              printf '%s\n' "$WEB_URL" > "$RUNNER_TEMP/blocklab-tunnel-url.txt"
-              {
-                echo "## BlockLab web dashboard"
-                echo
-                echo "[Open the dashboard]($WEB_URL)"
-                echo
-                echo "This is a UI prototype; game launch and metrics are simulated."
-              } >> "$GITHUB_STEP_SUMMARY"
-              break
-            fi
+          URL=""
+          for i in $(seq 1 60); do
+            URL="$(grep -Eo 'https://[A-Za-z0-9-]+\.trycloudflare\.com' "$RUNNER_TEMP/cloudflared.log" | head -1 || true)"
+            [ -n "$URL" ] && break
             sleep 2
           done
-          if [ -z "${WEB_URL:-}" ]; then
-            cat "$RUNNER_TEMP/cloudflared.log"
-            echo "::error::Could not establish the BlockLab Cloudflare quick tunnel."
-            exit 1
-          fi
+          test -n "$URL"
+          echo "Dashboard: $URL"
+          echo "## BlockLab dashboard" >> "$GITHUB_STEP_SUMMARY"
+          echo "[$URL]($URL)" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Publish BlockLab tunnel URL
-        uses: actions/upload-artifact@v4
-        with:
-          name: blocklab-tunnel-url
-          path: ${{ runner.temp }}/blocklab-tunnel-url.txt
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Start Playit tunnel
-        shell: bash
-        env:
-          PLAYIT_SECRET: ${{ secrets.PLAYIT_SECRET }}
+      - name: Keep server online
         run: |
-          set -euo pipefail
-          docker pull ghcr.io/playit-cloud/playit-agent:1.0
-          docker run -d --name playit-agent --network host \
-            -e SECRET_KEY="$PLAYIT_SECRET" \
-            ghcr.io/playit-cloud/playit-agent:1.0
-          docker logs --follow playit-agent &
-          echo $! > "$RUNNER_TEMP/playit-log-pid"
-          echo "Playit agent started. Public address may also be viewed at https://playit.gg/account/tunnels"
-          sleep 10
-          docker ps --filter name=playit-agent --format 'Playit container status: {{.Status}}'
-          docker logs --tail 30 playit-agent
-
-      - name: Start Paper and keep it online for 5h45m
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd server
-          CONSOLE_PIPE="$RUNNER_TEMP/paper-console"
-          STARTUP_LOG="$RUNNER_TEMP/paper-server.log"
-          mkfifo "$CONSOLE_PIPE"
-          exec 3<>"$CONSOLE_PIPE"
-          java -Xms1G -Xmx4G -jar paper.jar --nogui < "$CONSOLE_PIPE" > "$STARTUP_LOG" 2>&1 &
-          SERVER_PID=$!
+          set -e
           cleanup() {
-            if kill -0 "$SERVER_PID" 2>/dev/null; then
-              echo "Sending graceful stop to Paper..."
-              printf 'save-all\n' >&3 || true
-              sleep 2
-              printf 'stop\n' >&3 || true
-              for _ in $(seq 1 60); do
-                kill -0 "$SERVER_PID" 2>/dev/null || break
-                sleep 1
-              done
-              kill -0 "$SERVER_PID" 2>/dev/null && kill "$SERVER_PID" || true
-              wait "$SERVER_PID" || true
-            fi
-            docker logs --tail 80 playit-agent 2>/dev/null || true
-            docker stop playit-agent >/dev/null 2>&1 || true
-            docker rm playit-agent >/dev/null 2>&1 || true
-            exec 3>&- || true
-            rm -f "$CONSOLE_PIPE"
+            set +e
+            kill -TERM "$(cat "$RUNNER_TEMP/blocklab.pid")" 2>/dev/null || true
+            kill "$(cat "$RUNNER_TEMP/cloudflared.pid")" 2>/dev/null || true
           }
-          trap cleanup EXIT
-          trap 'exit 143' TERM
-          trap 'exit 130' INT
+          trap cleanup EXIT INT TERM
+          echo 'Select a gamemode in the dashboard. Paper is started by the API.'
+          for i in $(seq 1 2070); do sleep 10; done
 
-          READY=0
-          for _ in $(seq 1 300); do
-            if grep -q 'Done (' "$STARTUP_LOG"; then
-              READY=1
-              break
-            fi
-            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-              cat "$STARTUP_LOG"
-              exit 1
-            fi
-            sleep 1
-          done
-          cat "$STARTUP_LOG"
-          if [ "$READY" -ne 1 ]; then
-            echo "::error::Paper did not finish startup within 5 minutes."
-            exit 1
-          fi
-
-          echo "Paper is online. Keep this Actions run open; the world will be committed after a clean shutdown."
-          echo "Server will stop automatically after 5 hours 45 minutes."
-          for _ in $(seq 1 12); do
-            MATCH="$(docker logs playit-agent 2>&1 | grep -Eo '[A-Za-z0-9.-]+\.playit\.gg(:[0-9]+)?' | tail -1 || true)"
-            if [ -n "$MATCH" ]; then
-              echo "Possible Playit address: $MATCH"
-              break
-            fi
-            sleep 5
-          done
-
-          sleep 345m
-          echo "Runtime reached 5h45m; saving and stopping Paper."
-          printf 'save-all\n' >&3
-          sleep 3
-          printf 'stop\n' >&3
-          wait "$SERVER_PID"
-          exec 3>&-
-          rm -f "$CONSOLE_PIPE"
-          trap - EXIT INT TERM
-          docker logs --tail 80 playit-agent || true
-          docker stop playit-agent >/dev/null
-          docker rm playit-agent >/dev/null
-
-      - name: Export world.zip
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -f world.zip
-          (cd server && zip -qr ../world.zip world)
-          test -s world.zip
-
-      - name: Upload world.zip artifact
+      - name: Upload world artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: world
-          path: world.zip
-          if-no-files-found: error
+          name: blocklab-world-artifacts
+          path: artifacts/*.zip
+          if-no-files-found: warn
           retention-days: 7
 
-      - name: Commit world after Paper has stopped
+      - name: Save worlds
         if: always()
-        shell: bash
         run: |
-          set -euo pipefail
-          rm -f server/world/session.lock
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A server/world server/server.properties server/eula.txt server/config server/plugins
-          if git diff --cached --quiet; then
-            echo "No world or server data changes to commit."
-            exit 0
-          fi
-          git commit -m "Save Paper server world after shutdown"
-          git pull --rebase origin "$GITHUB_REF_NAME"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          set -e
+          rm -f server/worlds/*/session.lock 2>/dev/null || true
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A server/worlds artifacts worlds.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Save BlockLab world and artifacts'
+          git push origin HEAD:${GITHUB_REF_NAME}
