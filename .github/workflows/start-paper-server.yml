@@ -74,6 +74,14 @@ jobs:
             if [ -n "$WEB_URL" ]; then
               echo "::notice title=BlockLab web dashboard::$WEB_URL"
               echo "BlockLab dashboard URL: $WEB_URL"
+              printf '%s\n' "$WEB_URL" > "$RUNNER_TEMP/blocklab-tunnel-url.txt"
+              {
+                echo "## BlockLab web dashboard"
+                echo
+                echo "[Open the dashboard]($WEB_URL)"
+                echo
+                echo "This is a UI prototype; game launch and metrics are simulated."
+              } >> "$GITHUB_STEP_SUMMARY"
               break
             fi
             sleep 2
@@ -83,6 +91,14 @@ jobs:
             echo "::error::Could not establish the BlockLab Cloudflare quick tunnel."
             exit 1
           fi
+
+      - name: Publish BlockLab tunnel URL
+        uses: actions/upload-artifact@v4
+        with:
+          name: blocklab-tunnel-url
+          path: ${{ runner.temp }}/blocklab-tunnel-url.txt
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Start Playit tunnel
         shell: bash
