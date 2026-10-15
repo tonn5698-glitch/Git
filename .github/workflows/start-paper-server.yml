@@ -56,6 +56,34 @@ jobs:
           echo "Using plugin JARs already stored in the repository:"
           ls -lh server/plugins/Geyser-Spigot.jar server/plugins/floodgate-spigot.jar server/plugins/ViaVersion.jar
 
+      - name: Start BlockLab web dashboard and Cloudflare tunnel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m http.server 8080 --bind 127.0.0.1 --directory web > "$RUNNER_TEMP/blocklab-web.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/blocklab-web.pid"
+          curl --retry 5 --retry-delay 2 --retry-connrefused -fsS http://127.0.0.1:8080/ -o /dev/null
+
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o "$RUNNER_TEMP/cloudflared"
+          chmod +x "$RUNNER_TEMP/cloudflared"
+          "$RUNNER_TEMP/cloudflared" tunnel --url http://127.0.0.1:8080 --no-autoupdate > "$RUNNER_TEMP/cloudflared.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/cloudflared.pid"
+
+          for _ in $(seq 1 45); do
+            WEB_URL="$(grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$RUNNER_TEMP/cloudflared.log" | head -1 || true)"
+            if [ -n "$WEB_URL" ]; then
+              echo "::notice title=BlockLab web dashboard::$WEB_URL"
+              echo "BlockLab dashboard URL: $WEB_URL"
+              break
+            fi
+            sleep 2
+          done
+          if [ -z "${WEB_URL:-}" ]; then
+            cat "$RUNNER_TEMP/cloudflared.log"
+            echo "::error::Could not establish the BlockLab Cloudflare quick tunnel."
+            exit 1
+          fi
+
       - name: Start Playit tunnel
         shell: bash
         env:
