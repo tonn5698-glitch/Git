@@ -50,7 +50,6 @@ jobs:
           ADMIN_PASSWORD="$(grep '^Admin password: ' "$RUNNER_TEMP/blocklab.log" | sed 's/^Admin password: //' | head -1)"
           echo "## BlockLab login" >> "$GITHUB_STEP_SUMMARY"
           echo "Username: \`TonKun\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "Admin code: \`$ADMIN_PASSWORD\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Start Cloudflare web tunnel
         run: |
