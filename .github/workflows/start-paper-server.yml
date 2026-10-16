@@ -37,19 +37,21 @@ jobs:
           grep -q '^eula=true$' server/eula.txt
 
       - name: Start BlockLab API
+        env:
+          BLOCKLAB_ADMIN_PASSWORD: ${{ secrets.BLOCKLAB_ADMIN_PASSWORD }}
         run: |
           set -e
+          test -n "$BLOCKLAB_ADMIN_PASSWORD" || { echo 'Missing BLOCKLAB_ADMIN_PASSWORD repository secret.'; exit 1; }
           mkdir -p artifacts
-          python3 -u web/server.py > "$RUNNER_TEMP/blocklab.log" 2>&1 &
+          python3 -u web/server.py > >(sed '/^Admin password: /d' > "$RUNNER_TEMP/blocklab.log") 2>&1 &
           echo $! > "$RUNNER_TEMP/blocklab.pid"
           for i in $(seq 1 30); do
             curl -fsS http://127.0.0.1:8080/api/status >/dev/null && break
             sleep 1
           done
           curl -fsS http://127.0.0.1:8080/api/status >/dev/null
-          ADMIN_PASSWORD="$(grep '^Admin password: ' "$RUNNER_TEMP/blocklab.log" | sed 's/^Admin password: //' | head -1)"
           echo "## BlockLab login" >> "$GITHUB_STEP_SUMMARY"
-          echo "Username: \`TonKun\`" >> "$GITHUB_STEP_SUMMARY"
+          echo 'Username: `TonKun`' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Start Cloudflare web tunnel
         run: |
@@ -77,6 +79,20 @@ jobs:
           path: ${{ runner.temp }}/blocklab-tunnel-url.txt
           if-no-files-found: error
           retention-days: 1
+
+      - name: Email dashboard link via Resend
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+        run: |
+          set -e
+          test -n "$RESEND_API_KEY" || { echo 'Missing RESEND_API_KEY repository secret.'; exit 1; }
+          URL="$(cat "$RUNNER_TEMP/blocklab-tunnel-url.txt")"
+          PAYLOAD="$(jq -n --arg url "$URL" '{from:"BlockLab <onboarding@resend.dev>",to:["tonn5698@gmail.com"],subject:"BlockLab server is online",text:("Your BlockLab dashboard is online: " + $url + "\nUsername: TonKun\nFor security, the admin password is not included in email. Use the BLOCKLAB_ADMIN_PASSWORD repository secret you configured.")}')"
+          curl --fail-with-body --silent --show-error https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H 'Content-Type: application/json' \
+            --data "$PAYLOAD" > "$RUNNER_TEMP/resend-response.json"
+          echo 'Resend accepted the dashboard notification.'
 
       - name: Keep server online
         run: |
