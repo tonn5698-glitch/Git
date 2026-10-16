@@ -1,1 +1,8 @@
-[]
+[
+  {
+    "uuid": "06c74437-2c48-35d2-bbc0-36144bd71183",
+    "name": "TonKun",
+    "level": 4,
+    "bypassesPlayerLimit": false
+  }
+]
