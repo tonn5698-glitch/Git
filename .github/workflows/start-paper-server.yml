@@ -50,8 +50,11 @@ jobs:
             sleep 1
           done
           curl -fsS http://127.0.0.1:8080/api/status >/dev/null
+          ADMIN_CODE="$(grep '^Admin ID: ' "$RUNNER_TEMP/blocklab.log" | sed 's/^Admin ID: //' | head -1)"
+          test -n "$ADMIN_CODE"
           echo "## BlockLab login" >> "$GITHUB_STEP_SUMMARY"
           echo 'Username: `TonKun`' >> "$GITHUB_STEP_SUMMARY"
+          echo "Admin ID: \`$ADMIN_CODE\` (identifier only; not the login password)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Start Cloudflare web tunnel
         run: |
