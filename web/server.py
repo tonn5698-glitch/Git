@@ -18,7 +18,8 @@ if not Path(JAVA).exists(): JAVA = shutil.which('java') or 'java'
 if not TOKEN_FILE.exists():
     TOKEN_FILE.write_text(secrets.token_urlsafe(12))
     TOKEN_FILE.chmod(0o600)
-ADMIN_PASSWORD = os.environ.get('BLOCKLAB_ADMIN_PASSWORD', TOKEN_FILE.read_text().strip())
+ADMIN_CODE = TOKEN_FILE.read_text().strip()  # Non-secret identifier shown in the Actions panel.
+ADMIN_PASSWORD = os.environ.get('BLOCKLAB_ADMIN_PASSWORD') or ADMIN_CODE
 SESSIONS = set()
 LOCK = threading.RLock()
 STATE = {'status':'stopped','mode':None,'world':None,'message':'Chọn gamemode để bắt đầu.','error':None,'started_at':None}
@@ -217,7 +218,7 @@ class Handler(SimpleHTTPRequestHandler):
         except Exception: return self.send_json(400,{'error':'JSON không hợp lệ.'})
         if path=='/api/login':
             if data.get('username','').strip().lower()!='tonkun' or not secrets.compare_digest(str(data.get('password','')),ADMIN_PASSWORD):
-                return self.send_json(401,{'error':'Tên tài khoản hoặc mã quản trị không đúng.'})
+                return self.send_json(401,{'error':'Tên tài khoản hoặc mật khẩu không đúng.'})
             sid=secrets.token_urlsafe(32); SESSIONS.add(sid)
             return self.send_json(200,{'ok':True,'username':'TonKun'},{'Set-Cookie':f'blocklab_session={sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200'})
         if path=='/api/logout':
@@ -262,7 +263,7 @@ if __name__=='__main__':
     signal.signal(signal.SIGINT, shutdown_handler)
     print(f'BlockLab root: {ROOT}',flush=True)
     print(f'Admin username: TonKun',flush=True)
-    print(f'Admin password: {ADMIN_PASSWORD}',flush=True)
+    print(f'Admin ID: {ADMIN_CODE}',flush=True)
     print(f'Java: {JAVA}',flush=True)
     print(f'Gamemodes: {[m["id"] for m in available_modes()]}',flush=True)
     ThreadingHTTPServer(('127.0.0.1',PORT),Handler).serve_forever()
